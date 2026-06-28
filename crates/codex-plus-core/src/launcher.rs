@@ -282,6 +282,28 @@ where
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
+        hooks.apply_active_relay_profile(&settings).await?;
+        let home = crate::relay_config::default_codex_home_dir();
+        match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
+            Ok(result) if result.updated > 0 => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_historical_model_suffixes",
+                    serde_json::json!({
+                        "scanned": result.scanned,
+                        "updated": result.updated
+                    }),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_historical_model_suffixes_failed",
+                    serde_json::json!({
+                        "error": error.to_string()
+                    }),
+                );
+            }
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
@@ -307,6 +329,12 @@ where
                 .await;
             if injection_ready {
                 keep_launched_on_error = false;
+                // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
+                // 中残留的带后缀模型名，避免模型选择器继续显示废弃项。
+                crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(
+                    debug_port,
+                )
+                .await;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
                 let degraded = launch_status(
@@ -753,16 +781,40 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         settings: &BackendSettings,
     ) -> anyhow::Result<()> {
-        if !settings.computer_use_guard_enabled {
-            return Ok(());
-        }
         #[cfg(windows)]
         {
+            if !settings.computer_use_guard_enabled {
+                return Ok(());
+            }
             let home = crate::relay_config::default_codex_home_dir();
             let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
             let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
                 run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
+            });
+            if let Some(runtime) = self
+                .computer_use_guard_watchdog
+                .lock()
+                .await
+                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
+            {
+                let _ = runtime.shutdown.send(());
+                let _ = runtime.task.await;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = &settings;
+            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                            crate::computer_use_guard::kill_orphaned_computer_use_processes();
+                        }
+                    }
+                }
             });
             if let Some(runtime) = self
                 .computer_use_guard_watchdog

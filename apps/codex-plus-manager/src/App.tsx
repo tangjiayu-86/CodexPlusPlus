@@ -59,6 +59,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  modelWindowRowsFromProfile,
+  serializeModelWindowRows,
+  type ModelWindowRow,
+} from "./model-windows";
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -120,6 +125,7 @@ type BackendSettings = {
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
+  codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
@@ -163,7 +169,7 @@ type BackendSettings = {
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
 
-type RelayProfile = {
+export type RelayProfile = {
   id: string;
   name: string;
   model: string;
@@ -182,6 +188,7 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  modelWindows: string;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -622,6 +629,7 @@ const defaultSettings: BackendSettings = {
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
+  codexAppPluginAutoExpand: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
@@ -669,6 +677,7 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
     },
   ],
@@ -688,6 +697,13 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmText: string;
+    cancelText: string;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
@@ -948,18 +964,71 @@ export function App() {
     }
   };
 
+  const requestDeleteLocalSession = (session: LocalSession) =>
+    call<DeleteLocalSessionResult>("delete_local_session", {
+      request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
+    });
+
+  const confirmSessionDelete = (title: string, message: string) =>
+    new Promise<boolean>((resolve) => {
+      setConfirmDialog({
+        title,
+        message,
+        confirmText: "确认删除",
+        cancelText: "取消",
+        resolve,
+      });
+    });
+
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
-    const result = await run(() =>
-      call<DeleteLocalSessionResult>("delete_local_session", {
-        request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
-      }),
-    );
+    const confirmed = await confirmSessionDelete("删除会话", `删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`);
+    if (!confirmed) return;
+    const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
       showResultNotice("会话删除", result);
       await refreshLocalSessions(true);
     }
+  };
+
+  const deleteLocalSessions = async (sessions: LocalSession[]) => {
+    const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
+    if (!uniqueSessions.length) {
+      showNotice("批量删除会话", "请先选择要删除的会话。", "failed");
+      return;
+    }
+    const preview = uniqueSessions
+      .slice(0, 6)
+      .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
+      .join("\n");
+    const extraCount = uniqueSessions.length > 6 ? `\n...以及另外 ${uniqueSessions.length - 6} 个会话` : "";
+    const confirmed = await confirmSessionDelete(
+      "批量删除会话",
+      `删除选中的 ${uniqueSessions.length} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n${preview}${extraCount}`,
+    );
+    if (!confirmed) return;
+
+    let succeeded = 0;
+    const failed: string[] = [];
+    for (const session of uniqueSessions) {
+      const result = await run(() => requestDeleteLocalSession(session));
+      if (result && isSuccessStatus(result.status)) {
+        succeeded += 1;
+      } else {
+        failed.push(session.title || session.id);
+      }
+    }
+
+    if (failed.length) {
+      showNotice(
+        "批量删除会话",
+        `已删除 ${succeeded} 个，失败 ${failed.length} 个：${failed.slice(0, 3).map(truncateSessionDeletePreview).join("、")}`,
+        succeeded ? "ok" : "failed",
+      );
+    } else {
+      showNotice("批量删除会话", `已删除 ${succeeded} 个会话。`, "ok");
+    }
+    await refreshLocalSessions(true);
   };
 
   const refreshLiveContextEntries = async (silent = false) => {
@@ -1752,6 +1821,7 @@ export function App() {
       deleteUserScript,
       refreshLocalSessions,
       deleteLocalSession,
+      deleteLocalSessions,
       refreshZedRemoteProjects,
       openZedRemoteProject,
       forgetZedRemoteProject,
@@ -1942,6 +2012,19 @@ export function App() {
           onClose={() => setNotice(null)}
         />
       ) : null}
+      {confirmDialog ? (
+        <ConfirmDialog
+          confirm={confirmDialog}
+          onCancel={() => {
+            confirmDialog.resolve(false);
+            setConfirmDialog(null);
+          }}
+          onConfirm={() => {
+            confirmDialog.resolve(true);
+            setConfirmDialog(null);
+          }}
+        />
+      ) : null}
       {pluginMarketplacePrompt ? (
         <PluginMarketplacePromptDialog
           progress={pluginMarketplaceProgress}
@@ -2001,6 +2084,7 @@ type Actions = {
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
+  deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
   openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
   forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
@@ -2647,6 +2731,7 @@ function EnhanceScreen({
           <div className="feature-switch-grid">
             <FeatureToggle title="插件市场解锁" detail="API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。" checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
             <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
+            <FeatureToggle title="插件列表全量展示" detail="进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。" checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
             <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
             <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
             <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
@@ -2919,6 +3004,53 @@ function SessionsScreen({
   const items = sessions?.sessions ?? [];
   const activeCount = items.filter((item) => !item.archived).length;
   const archivedCount = items.length - activeCount;
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
+  const selectedCount = selectedSessions.length;
+  const allSelected = items.length > 0 && selectedCount === items.length;
+
+  useEffect(() => {
+    const itemIds = new Set(items.map((session) => session.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
+  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllSessions = () => {
+    setSelectionMode(true);
+    setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  };
+
+  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
+
+  const deleteSelectedSessions = async () => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      return;
+    }
+    setBulkDeleting(true);
+    try {
+      await actions.deleteLocalSessions(selectedSessions);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   return (
     <>
       <Panel>
@@ -2997,26 +3129,56 @@ function SessionsScreen({
         <CardHead title="本地会话" detail={items.length ? "按更新时间倒序显示" : "点击刷新会话读取本地数据库"} />
         <CardContent>
           {items.length ? (
-            <div className="session-list">
-              {items.map((session) => (
-                <div className="session-row" key={session.id}>
-                  <div className="session-main">
-                    <strong>{session.title || "未命名会话"}</strong>
-                    <span>{session.id}</span>
-                    <small>{session.cwd || "未记录项目路径"}</small>
-                  </div>
-                  <div className="session-meta">
-                    <Badge status={session.archived ? "archived" : "ok"} />
-                    <span>{session.modelProvider || "provider 未记录"}</span>
-                    <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                  </div>
-                  <Button variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                    <Trash2 className="h-4 w-4" />
-                    删除
+            <>
+              <div className="session-list-toolbar">
+                <span className="session-selection-summary">已选择 {selectedCount} / {items.length} 个会话</span>
+                <div className="session-selection-actions">
+                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
+                    全选当前列表
+                  </Button>
+                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
+                    清空选择
+                  </Button>
+                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
+                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
+                    {selectionMode ? (bulkDeleting ? "正在删除…" : "删除已选") : "多选"}
                   </Button>
                 </div>
-              ))}
-            </div>
+              </div>
+              <div className="session-list">
+                {items.map((session) => {
+                  const selected = selectedSessionIds.has(session.id);
+                  return (
+                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
+                      {selectionMode ? (
+                        <label className="session-select" title="选择会话">
+                          <input
+                            aria-label={`选择会话 ${session.title || session.id}`}
+                            checked={selected}
+                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
+                            type="checkbox"
+                          />
+                        </label>
+                      ) : null}
+                      <div className="session-main">
+                        <strong>{session.title || "未命名会话"}</strong>
+                        <span>{session.id}</span>
+                        <small>{session.cwd || "未记录项目路径"}</small>
+                      </div>
+                      <div className="session-meta">
+                        <Badge status={session.archived ? "archived" : "ok"} />
+                        <span>{session.modelProvider || "provider 未记录"}</span>
+                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
+                      </div>
+                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                        <Trash2 className="h-4 w-4" />
+                        删除
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           ) : (
             <div className="empty">未读取到本地会话，或当前 SQLite 会话库不存在。</div>
           )}
@@ -3658,27 +3820,35 @@ function RelayProfileDetail({
   actions: Actions;
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
+  );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
-    setDraft(
-      isAggregateRelayProfile(profile)
-        ? normalizeAggregateRelayProfile(profile, form)
-        : deriveRelayProfileFromFiles(
-            isActive && profileUsesLiveFiles && relayFiles
-              ? {
-                ...profile,
-                configContents: relayFiles.configContents,
-                authContents: relayFiles.authContents,
-              }
-              : profile,
-          ),
-    );
-  }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+    const nextDraft = isAggregateRelayProfile(profile)
+      ? normalizeAggregateRelayProfile(profile, form)
+      : deriveRelayProfileFromFiles(
+          isActive && profileUsesLiveFiles && relayFiles
+            ? {
+              ...profile,
+              configContents: relayFiles.configContents,
+              authContents: relayFiles.authContents,
+            }
+            : profile,
+        );
+    setDraft(nextDraft);
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
+  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
+  const draftWithModelRows = () => {
+    const serializedRows = serializeModelWindowRows(modelWindowRows);
+    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
+  };
   const saveDraft = async () => {
     if (validationError) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const draftWithWindows = draftWithModelRows();
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
@@ -3695,7 +3865,8 @@ function RelayProfileDetail({
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const draftWithWindows = draftWithModelRows();
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,
@@ -3718,7 +3889,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} />
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
         contextProfile={profile}
@@ -3771,6 +3942,8 @@ function RelayProfileEditor({
   onProfileChange,
   onSwitch,
   actions,
+  modelWindowRows,
+  setModelWindowRows,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
@@ -3778,6 +3951,8 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onSwitch: () => void;
   actions: Actions;
+  modelWindowRows: ModelWindowRow[];
+  setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   if (isAggregateRelayProfile(profile)) {
@@ -3794,6 +3969,19 @@ function RelayProfileEditor({
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+  };
+  const updateModelWindowRow = (index: number, patch: Partial<ModelWindowRow>) => {
+    setModelWindowRows(
+      modelWindowRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
+    );
+  };
+  const removeModelWindowRow = (index: number) => {
+    const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
+    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "" }]);
+  };
+  const addModelWindowRows = (rows: ModelWindowRow[]) => {
+    const existingRows = modelWindowRows.filter((row) => row.model.trim() || row.window.trim());
+    setModelWindowRows([...existingRows, ...rows]);
   };
   return (
     <div className="relay-profile-editor">
@@ -3844,8 +4032,11 @@ function RelayProfileEditor({
           <Input
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
+            placeholder="例如 deepseek-v4-pro"
           />
+          <p className="field-hint">
+            默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。
+          </p>
         </Field>
         <Field className="relay-field-goals" label="Codex 目标">
           <label className="inline-check">
@@ -3951,16 +4142,58 @@ function RelayProfileEditor({
         ) : null}
         {showApiFields ? (
           <Field className="relay-field-model-list" label="模型列表">
+            <div className="relay-model-row-editor">
+              <div className="relay-model-row relay-model-row-head">
+                <span>模型名称</span>
+                <span>上下文窗口</span>
+                <span />
+              </div>
+              {modelWindowRows.map((row, index) => (
+                <div className="relay-model-row" key={`${index}-${row.model}`}>
+                  <Input
+                    value={row.model}
+                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
+                    placeholder="deepseek/deepseek-v4-flash"
+                  />
+                  <Input
+                    value={row.window}
+                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
+                    placeholder="1M"
+                  />
+                  <Button
+                    aria-label="删除模型"
+                    onClick={() => removeModelWindowRow(index)}
+                    size="icon"
+                    title="删除模型"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
             <div className="relay-model-list-tools">
-              <Textarea
-                value={profile.modelList}
-                onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
-                placeholder="每行一个模型，例如 qwen3-coder"
-              />
+              <Button
+                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "" }])}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                添加模型
+              </Button>
               <Button
                 onClick={async () => {
-                  const models = await actions.fetchRelayProfileModels(profile);
-                  if (models?.length) updateDraft({ modelList: models.join("\n") });
+                  const serializedRows = serializeModelWindowRows(modelWindowRows);
+                  const models = await actions.fetchRelayProfileModels({
+                    ...profile,
+                    modelList: serializedRows.modelList,
+                    modelWindows: serializedRows.modelWindows,
+                  });
+                  if (models?.length) {
+                    addModelWindowRows(models.map((model) => ({ model, window: "" })));
+                  }
                 }}
                 size="sm"
                 type="button"
@@ -3970,6 +4203,9 @@ function RelayProfileEditor({
                 从上游获取
               </Button>
             </div>
+            <p className="field-hint">
+              每行一个模型；上下文窗口可填 <code>1M</code>、<code>200K</code> 或 <code>1000000</code>，留空表示使用 Codex 默认长度。
+            </p>
           </Field>
         ) : null}
         {showApiFields ? (
@@ -4614,6 +4850,37 @@ function NoticeDialog({
           <p>{notice.message}</p>
         </div>
         <button className="toast-close" onClick={onClose} type="button">×</button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  confirm,
+  onConfirm,
+  onCancel,
+}: {
+  confirm: { title: string; message: string; confirmText: string; cancelText: string };
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card">
+        <div className="modal-head">
+          <div>
+            <h2>{confirm.title}</h2>
+            <p className="modal-message">{confirm.message}</p>
+          </div>
+          <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <Toolbar>
+          <Button onClick={onConfirm}>
+            <Trash2 className="h-4 w-4" />
+            {confirm.confirmText}
+          </Button>
+          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
+        </Toolbar>
       </div>
     </div>
   );
@@ -5497,6 +5764,11 @@ function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
 }
 
+function truncateSessionDeletePreview(value: string) {
+  const normalized = value.trim();
+  return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
+}
+
 function healthItems(overview: OverviewResult | null) {
   return [
     {
@@ -5560,6 +5832,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            modelWindows: "",
             userAgent: "",
           },
         ];
@@ -5616,6 +5889,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         contextWindow: "",
         autoCompactLimit: "",
         modelList: "",
+        modelWindows: "",
       },
       null,
     );
@@ -5642,6 +5916,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    modelWindows: profile.modelWindows || "",
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -5867,9 +6142,13 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
+  const configModel = codexModelFromConfig(configContents);
+  // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
+  // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
+  const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
   return {
     ...profile,
-    model: codexModelFromConfig(configContents),
+    model,
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
     apiKey: profile.relayMode === "official"
@@ -5899,7 +6178,10 @@ function applyRelayProfilePatchToFiles(
   }
 
   if ("model" in patch) {
-    next.configContents = setRootTomlStringKey(next.configContents, "model", patch.model || "");
+    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
+    // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
+    const { slug } = parseModelSuffix(patch.model || "");
+    next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
     if (next.relayMode === "pureApi") {
@@ -5951,6 +6233,22 @@ function codexModelFromConfig(contents: string): string {
     if (match) return match[2].replace(/\\(["'\\])/g, "$1");
   }
   return "";
+}
+
+/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
+/// 非法或没有后缀时返回原串作为 slug。
+function parseModelSuffix(raw: string): { slug: string; window?: number } {
+  const trimmed = raw.trim();
+  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
+  if (!match) return { slug: trimmed };
+  const inner = match[2];
+  const numPart = inner.replace(/[KkMm]$/, "");
+  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
+    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
+    : 1;
+  const window = Number.parseInt(numPart, 10) * multiplier;
+  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
+  return { slug: match[1].trim(), window };
 }
 
 function codexBaseUrlFromConfig(contents: string): string {
@@ -6254,6 +6552,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    modelWindows: "",
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -6283,6 +6582,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
       aggregate: {
         strategy: "failover",

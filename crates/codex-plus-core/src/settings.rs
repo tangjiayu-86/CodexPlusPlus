@@ -82,6 +82,12 @@ pub struct RelayProfile {
     #[serde(rename = "modelList", default)]
     pub model_list: String,
     #[serde(
+        rename = "modelWindows",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub model_windows: String,
+    #[serde(
         rename = "userAgent",
         default,
         skip_serializing_if = "String::is_empty"
@@ -141,6 +147,7 @@ impl Default for RelayProfile {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            model_windows: String::new(),
             user_agent: String::new(),
         }
     }
@@ -196,6 +203,8 @@ pub struct BackendSettings {
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
     pub codex_app_force_plugin_install: bool,
+    #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
+    pub codex_app_plugin_auto_expand: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
     pub codex_app_model_whitelist_unlock: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
@@ -300,6 +309,7 @@ impl Default for BackendSettings {
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
+            codex_app_plugin_auto_expand: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
@@ -377,6 +387,7 @@ impl BackendSettings {
                 auto_compact_limit: String::new(),
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
+                model_windows: String::new(),
                 user_agent: String::new(),
             };
         }
@@ -421,6 +432,7 @@ impl BackendSettings {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            model_windows: String::new(),
             user_agent: String::new(),
         }
     }
@@ -645,6 +657,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
+    merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
@@ -1026,6 +1039,7 @@ mod tests {
         assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.codex_app_force_plugin_install);
+        assert!(settings.codex_app_plugin_auto_expand);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
@@ -1069,13 +1083,15 @@ mod tests {
         let settings: BackendSettings = serde_json::from_str(
             r#"{
                 "codexAppPluginMarketplaceUnlock": true,
-                "codexAppForcePluginInstall": false
+                "codexAppForcePluginInstall": false,
+                "codexAppPluginAutoExpand": false
             }"#,
         )
         .unwrap();
 
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_force_plugin_install);
+        assert!(!settings.codex_app_plugin_auto_expand);
 
         let legacy_settings: BackendSettings = serde_json::from_str(
             r#"{
@@ -1086,6 +1102,7 @@ mod tests {
 
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
         assert!(!legacy_settings.codex_app_force_plugin_install);
+        assert!(legacy_settings.codex_app_plugin_auto_expand);
     }
 
     #[test]
@@ -1537,8 +1554,9 @@ experimental_bearer_token = "sk-existing""#
         store.save(&settings).unwrap();
 
         let loaded = store.load().unwrap();
+        let expected = normalize_settings_config_sections(settings);
         let active_aggregate = loaded.active_aggregate_relay_profile().unwrap();
-        assert_eq!(loaded, settings);
+        assert_eq!(loaded, expected);
         assert_eq!(
             active_aggregate.strategy,
             AggregateRelayStrategy::WeightedRoundRobin
