@@ -447,6 +447,9 @@ pub fn apply_relay_config_file_to_home(
     home: &Path,
     config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    let config_contents = config_contents
+        .strip_prefix('\u{feff}')
+        .unwrap_or(config_contents);
     if config_contents.trim().is_empty() {
         anyhow::bail!("config.toml 内容不能为空");
     }
@@ -1071,6 +1074,17 @@ fn write_codex_live_atomic(
     };
     #[cfg(windows)]
     let config_text = guarded_config_text.as_deref();
+
+    let config_text = match config_text {
+        Some(config_text) => Some(
+            crate::plugin_marketplace::preserve_openai_curated_remote_marketplace_config(
+                home,
+                config_text,
+            )?,
+        ),
+        None => None,
+    };
+    let config_text = config_text.as_deref();
 
     if let Some(config_text) = config_text {
         validate_toml_config(config_text, &config_path)?;
@@ -1821,7 +1835,7 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
         .unwrap_or_else(|| profile.model.trim().to_string())
 }
 
-fn relay_profile_base_url(profile: &RelayProfile) -> String {
+pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return crate::protocol_proxy::local_responses_proxy_base_url(
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -1857,7 +1871,7 @@ fn relay_profile_base_url(profile: &RelayProfile) -> String {
     }
 }
 
-fn relay_profile_api_key(profile: &RelayProfile) -> String {
+pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return "codex-plus-aggregate".to_string();
     }

@@ -87,6 +87,14 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
   </tr>
   <tr>
     <td align="center">
+      <a href="https://cubence.com?source=codexplusplus">
+        <img src="docs/images/sponsor-cubence.png" alt="Cubence" height="80">
+      </a>
+    </td>
+    <td><a href="https://cubence.com?source=codexplusplus"><strong>Cubence</strong></a><br>感谢 Cubence 对本项目的支持。Cubence 是一家致力为客户提供稳定、高效的 API 中转服务商。从 25 年 9 月运营至今，提供了 Claude Code、Codex、Gemini 等多种模型支持。Cubence 为本开源项目多用户提供了特别的专属优惠 <code>CODEXPLUSPLUS</code>，在首次购买时享受 8.8 折优惠！</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://www.0029.org/?promo=AFF11F">
         <img src="docs/images/sponsor-0029.svg" alt="0029 云桥" height="80">
       </a>
@@ -148,6 +156,22 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
       </a>
     </td>
     <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>Smallice｜AI 中转站</strong></a><br>感谢 Smallice 赞助本项目！Smallice 是一把钥匙，通往所有值得调用的语言模型。一个统一的 endpoint，作为你应用之下、无需多言的基础层。无论你召唤的是 Claude、GPT、Gemini 还是 DeepSeek，调用的形式从此恒等。通过<a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">此链接注册</a>即可开始使用。</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://ergouapi.com">
+        <img src="docs/images/sponsor-ergou-api.png" alt="二狗 API" height="80">
+      </a>
+    </td>
+    <td><a href="https://ergouapi.com"><strong>二狗 API</strong></a><br>二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://aihub.top/register?aff=ZYD8UJV274HD">
+        <img src="docs/images/sponsor-aihub.jpg" alt="AIHub" height="80">
+      </a>
+    </td>
+    <td><a href="https://aihub.top/register?aff=ZYD8UJV274HD"><strong>AIHub</strong></a><br>AIHub 是一家面向个人开发者和企业团队的高可用 AI 模型 API 中转平台。支持 Codex / ClaudeCode，价格约为官方 1 折不到。我们不生产 Token，我们是 Token 搬运工！通过<a href="https://aihub.top/register?aff=ZYD8UJV274HD">此链接注册</a>并使用优惠码 <code>CODEXPLUSPLUS</code>，即可获得 3$ 测试额度。</td>
   </tr>
 </table>
 
